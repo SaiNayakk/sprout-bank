@@ -87,3 +87,11 @@ sprout:
         key: ${BANK_CLEARING_PARTNER_KEY:dev-only-clearing-partner-key}
         webhook-secret: ${BANK_CLEARING_WEBHOOK_SECRET:dev-only-clearing-webhook-secret}
         opening-balance: ${BANK_CLEARING_FLOAT:10000000.00}
+      # A fictional employer, for the public sandbox only: it pays the sandbox's fictional customers a monthly
+      # salary, as real people get paid. It holds nothing unless BANK_PAYROLL_FLOAT is set (the sandbox sets it).
+      - name: payroll
+        display-name: Sandbox Payroll (fictional employer)
+        vpa: payroll@sproutbank
+        key: ${BANK_PAYROLL_PARTNER_KEY:dev-only-payroll-partner-key}
+        webhook-secret: ${BANK_PAYROLL_WEBHOOK_SECRET:dev-only-payroll-webhook-secret}
+        opening-balance: ${BANK_PAYROLL_FLOAT:0.00}

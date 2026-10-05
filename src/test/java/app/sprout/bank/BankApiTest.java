@@ -283,6 +283,16 @@ class BankApiTest {
     }
 
     @Test
+    void theSandboxPayrollHoldsNothingUnlessGivenAFloat() throws Exception {
+        String payroll = "dev-only-payroll-partner-key";
+        mvc.perform(get("/partner/v1/account").header("X-Partner-Key", payroll)).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.vpa").value("payroll@sproutbank")).andExpect(jsonPath("$.balance").value("0.00"));
+        mvc.perform(post("/partner/v1/payouts").header("X-Partner-Key", payroll).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("payeeVpa", vpa, "amount", "40000.00", "reference", "salary-" + UUID.randomUUID()))))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("INSUFFICIENT_BALANCE"));
+    }
+
+    @Test
     void payoutsAreIdempotentAndLimitedToWhatThePartnerHas() throws Exception {
         approve(collect("300"), "2580").andExpect(status().isOk());   // Sprout now holds at least ₹300 here
         String ref = "wd-" + UUID.randomUUID();
