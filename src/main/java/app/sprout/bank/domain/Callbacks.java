@@ -26,7 +26,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Delivers partner callbacks from the outbox, signed, until each is acknowledged with a 2xx: 1 s,
  * 2 s, 4 s ... up to a minute apart. A partner that was down gets every event when it comes back.
- * Also expires collect requests nobody answered.
+ * Also expires collect requests and mandate requests nobody answered.
  */
 @Component
 public class Callbacks {
@@ -40,9 +40,11 @@ public class Callbacks {
     private final Clock clock;
     private final BankProperties props;
     private final Bank bank;
+    private final Mandates mandates;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 
-    public Callbacks(JdbcClient db, TransactionTemplate tx, Clock clock, BankProperties props, Bank bank) {
+    public Callbacks(JdbcClient db, TransactionTemplate tx, Clock clock, BankProperties props, Bank bank, Mandates mandates) {
+        this.mandates = mandates;
         this.db = db;
         this.tx = tx;
         this.clock = clock;
@@ -56,6 +58,10 @@ public class Callbacks {
             int n = bank.expireDue();
             if (n > 0) {
                 log.info("Expired {} collect request(s) nobody answered", n);
+            }
+            int m = mandates.expireDue();
+            if (m > 0) {
+                log.info("Expired {} mandate request(s) nobody answered", m);
             }
         } catch (RuntimeException e) {
             log.warn("Couldn't expire requests this time: {}", e.getMessage());

@@ -9,6 +9,10 @@ import app.sprout.bank.domain.Bank.Payout;
 import app.sprout.bank.domain.Bank.Request;
 import app.sprout.bank.domain.Bank.Txn;
 import app.sprout.bank.domain.ErrorCode;
+import app.sprout.bank.domain.Mandates;
+import app.sprout.bank.domain.Mandates.Debit;
+import app.sprout.bank.domain.Mandates.Mandate;
+import app.sprout.bank.domain.UpiPayments;
 import app.sprout.bank.domain.Money;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -46,15 +50,27 @@ public class BankController {
     public record CollectRequestBody(@NotBlank String payerVpa, @NotBlank String amount, @NotBlank @Size(max = 120) String reference,
                                      @Size(max = 100) String note, @NotBlank String callbackUrl) {}
 
+    public record PayBody(@NotBlank String payeeVpa, @NotBlank String amount, String upiPin, @Size(max = 100) String note) {}
+
+    public record MandateBody(@NotBlank String payerVpa, @NotBlank String maxAmount, @NotBlank @Size(max = 100) String purpose,
+                              @NotBlank @Size(max = 120) String reference, Boolean shareSpends, @NotBlank String callbackUrl) {}
+
+    public record DebitBody(@NotBlank String amount, @NotBlank @Size(max = 120) String reference) {}
+
     public record PayoutBody(@NotBlank String payeeVpa, @NotBlank String amount, @NotBlank @Size(max = 120) String reference) {}
 
     private static final Set<String> STATUSES = Set.of("PENDING", "APPROVED", "DECLINED", "EXPIRED");
+    private static final Set<String> MANDATE_STATUSES = Set.of("PENDING", "ACTIVE", "DECLINED", "EXPIRED", "REVOKED");
 
     private final Bank bank;
+    private final UpiPayments upi;
+    private final Mandates mandates;
     private final String page;
 
-    public BankController(Bank bank) throws IOException {
+    public BankController(Bank bank, UpiPayments upi, Mandates mandates) throws IOException {
         this.bank = bank;
+        this.upi = upi;
+        this.mandates = mandates;
         this.page = new ClassPathResource("bank/app.html").getContentAsString(StandardCharsets.UTF_8);
     }
 
@@ -89,6 +105,44 @@ public class BankController {
     @PostMapping("/v1/requests/{id}/decline")
     public Map<String, Object> decline(@RequestHeader(value = "X-User-Id", required = false) String user, @PathVariable UUID id) {
         return request(bank.decline(userId(user), id));
+    }
+
+    @GetMapping("/v1/merchants")
+    public Map<String, Object> merchants() {
+        return Map.of("merchants", upi.merchants().stream()
+                .map(m -> Map.of("vpa", m.vpa(), "name", m.name(), "category", m.category())).toList());
+    }
+
+    @PostMapping("/v1/payments")
+    public ResponseEntity<Map<String, Object>> pay(@RequestHeader(value = "X-User-Id", required = false) String user,
+                                                   @Valid @RequestBody PayBody body) {
+        Txn t = upi.pay(userId(user), body.payeeVpa(), Money.paise(body.amount()), body.upiPin(), body.note());
+        return ResponseEntity.status(HttpStatus.CREATED).body(txn(t));
+    }
+
+    @GetMapping("/v1/mandates")
+    public Map<String, Object> mandates(@RequestHeader(value = "X-User-Id", required = false) String user,
+                                        @RequestParam(required = false) String status) {
+        if (status != null && !MANDATE_STATUSES.contains(status)) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "status must be one of " + MANDATE_STATUSES + ".");
+        }
+        return Map.of("mandates", mandates.mine(userId(user), status).stream().map(BankController::mandate).toList());
+    }
+
+    @PostMapping("/v1/mandates/{id}/approve")
+    public Map<String, Object> approveMandate(@RequestHeader(value = "X-User-Id", required = false) String user, @PathVariable UUID id,
+                                              @RequestBody PinRequest req) {
+        return mandate(mandates.approve(userId(user), id, req.upiPin()));
+    }
+
+    @PostMapping("/v1/mandates/{id}/decline")
+    public Map<String, Object> declineMandate(@RequestHeader(value = "X-User-Id", required = false) String user, @PathVariable UUID id) {
+        return mandate(mandates.decline(userId(user), id));
+    }
+
+    @PostMapping("/v1/mandates/{id}/revoke")
+    public Map<String, Object> revokeMandate(@RequestHeader(value = "X-User-Id", required = false) String user, @PathVariable UUID id) {
+        return mandate(mandates.revoke(userId(user), id));
     }
 
     @GetMapping("/v1/transactions")
@@ -143,6 +197,31 @@ public class BankController {
     public Map<String, Object> collectStatus(@RequestHeader(value = "X-Partner-Key", required = false) String key,
                                              @PathVariable UUID id) {
         return request(bank.partnerRequest(bank.partner(key), id));
+    }
+
+    @PostMapping("/partner/v1/mandates")
+    public ResponseEntity<Map<String, Object>> requestMandate(@RequestHeader(value = "X-Partner-Key", required = false) String key,
+                                                              @Valid @RequestBody MandateBody body) {
+        Partner partner = bank.partner(key);
+        Created<Mandate> m = mandates.request(partner, body.payerVpa(), Money.paise(body.maxAmount()), body.purpose(), body.reference(),
+                Boolean.TRUE.equals(body.shareSpends()), body.callbackUrl());
+        return ResponseEntity.status(m.created() ? HttpStatus.CREATED : HttpStatus.OK).body(mandate(m.value()));
+    }
+
+    @GetMapping("/partner/v1/mandates/{id}")
+    public Map<String, Object> partnerMandate(@RequestHeader(value = "X-Partner-Key", required = false) String key,
+                                              @PathVariable UUID id) {
+        return mandate(mandates.forPartner(bank.partner(key), id));
+    }
+
+    @PostMapping("/partner/v1/mandates/{id}/debits")
+    public ResponseEntity<Map<String, Object>> debit(@RequestHeader(value = "X-Partner-Key", required = false) String key,
+                                                     @PathVariable UUID id, @Valid @RequestBody DebitBody body) {
+        Created<Debit> d = mandates.debit(bank.partner(key), id, Money.paise(body.amount()), body.reference());
+        Debit v = d.value();
+        return ResponseEntity.status(d.created() ? HttpStatus.CREATED : HttpStatus.OK).body(Map.of("id", v.id().toString(),
+                "mandateId", v.mandateId().toString(), "amount", Money.rupees(v.amount()), "reference", v.reference(),
+                "status", v.status(), "createdAt", v.createdAt().toString()));
     }
 
     @PostMapping("/partner/v1/payouts")
@@ -206,6 +285,28 @@ public class BankController {
             m.put("decidedAt", r.decidedAt().toString());
         }
         return m;
+    }
+
+    static Map<String, Object> mandate(Mandate m) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", m.id().toString());
+        out.put("payerVpa", m.payerVpa());
+        out.put("payeeVpa", m.payeeVpa());
+        out.put("payeeName", m.payeeName());
+        out.put("maxAmount", Money.rupees(m.maxAmount()));
+        out.put("purpose", m.purpose());
+        out.put("reference", m.reference());
+        out.put("shareSpends", m.shareSpends());
+        out.put("status", m.status());
+        out.put("createdAt", m.createdAt().toString());
+        out.put("expiresAt", m.expiresAt().toString());
+        if (m.decidedAt() != null) {
+            out.put("decidedAt", m.decidedAt().toString());
+        }
+        if (m.revokedAt() != null) {
+            out.put("revokedAt", m.revokedAt().toString());
+        }
+        return out;
     }
 
     static Map<String, Object> payout(Payout p) {

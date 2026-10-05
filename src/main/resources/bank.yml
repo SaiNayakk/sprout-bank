@@ -66,6 +66,7 @@ sprout:
   bank:
     opening-balance: "100000.00"     # every new customer starts with this much (it's not real money)
     collect-ttl: ${BANK_COLLECT_TTL:5m}
+    mandate-ttl: ${BANK_MANDATE_TTL:15m}   # an AutoPay request nobody answers lapses after this
     pin-attempts: 3
     pin-lockout: 15m
     bcrypt-strength: ${BANK_BCRYPT_STRENGTH:10}
