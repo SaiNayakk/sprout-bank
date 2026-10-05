@@ -157,6 +157,22 @@ class BankApiTest {
     }
 
     @Test
+    void peopleWithTheSameNameOpeningAtOnceAllGetTheirOwnAddress(@Autowired app.sprout.bank.domain.Bank bank) throws Exception {
+        // found under load in pre-prod: same-name openings raced for one address and were told they already had an account
+        List<java.util.concurrent.Future<String>> opened = new java.util.ArrayList<>();
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < 20; i++) {
+                opened.add(pool.submit(() -> bank.open(UUID.randomUUID(), "Kiran Das", "739153").vpa()));
+            }
+        }
+        java.util.Set<String> vpas = new java.util.HashSet<>();
+        for (var f : opened) {
+            vpas.add(f.get());
+        }
+        assertThat(vpas).hasSize(20).allMatch(v -> v.matches("kiran\\.das\\d*@sproutbank"));
+    }
+
+    @Test
     void easyPinsAreRefused() throws Exception {
         for (String pin : new String[] {"1111", "1234", "654321", "12a4", "12345", ""}) {
             customerPost("/v1/accounts", UUID.randomUUID(), Map.of("holderName", "Ravi", "upiPin", pin))
