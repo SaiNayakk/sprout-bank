@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 @Service
 public class Bank {
+
+    private static final int VPA_ATTEMPTS = 8;
 
     public record Account(String vpa, UUID userId, String holderName, long balance, Instant openedAt) {}
 
@@ -93,18 +96,30 @@ public class Bank {
         }
         long opening = Money.paise(props.openingBalance());
         Instant now = clock.instant();
-        String vpa = freeVpa(name);
         String hash = bcrypt.encode(pin);
-        try {
-            tx.executeWithoutResult(s -> {
-                db.sql("INSERT INTO accounts (vpa, user_id, holder_name, balance_paise, pin_hash, opened_at) VALUES (?, ?, ?, ?, ?, ?)")
-                        .params(vpa, userId, name, opening, hash, ts(now)).update();
-                record(vpa, "IN", opening, "Opening balance (not real money)", null, null, opening, now);
-            });
-        } catch (org.springframework.dao.DuplicateKeyException e) {
-            throw new ApiException(ErrorCode.ACCOUNT_EXISTS, "You already have a Sprout Bank account.");
+        String base = vpaBase(name);
+        // the plain name first, then the name with a random number; two people with the same name
+        // opening at the same moment can pick the same address, so a taken address means another try
+        for (int attempt = 0; attempt < VPA_ATTEMPTS; attempt++) {
+            String vpa = base + (attempt == 0 ? "" : String.valueOf(ThreadLocalRandom.current().nextInt(1000, 10_000))) + "@sproutbank";
+            if (attempt == 0 && db.sql("SELECT 1 FROM accounts WHERE vpa = ?").param(vpa).query(Integer.class).optional().isPresent()) {
+                continue;
+            }
+            try {
+                tx.executeWithoutResult(s -> {
+                    db.sql("INSERT INTO accounts (vpa, user_id, holder_name, balance_paise, pin_hash, opened_at) VALUES (?, ?, ?, ?, ?, ?)")
+                            .params(vpa, userId, name, opening, hash, ts(now)).update();
+                    record(vpa, "IN", opening, "Opening balance (not real money)", null, null, opening, now);
+                });
+                return account(userId).orElseThrow();
+            } catch (org.springframework.dao.DuplicateKeyException e) {
+                if (account(userId).isPresent()) {
+                    throw new ApiException(ErrorCode.ACCOUNT_EXISTS, "You already have a Sprout Bank account.");
+                }
+                // the address was taken in the meantime: try another
+            }
         }
-        return account(userId).orElseThrow();
+        throw new IllegalStateException("No free UPI address for " + base + " after " + VPA_ATTEMPTS + " tries");
     }
 
     /** 4 or 6 digits, not all the same and not a run like 1234 or 654321. */
@@ -124,21 +139,12 @@ public class Bank {
         }
     }
 
-    private String freeVpa(String holderName) {
+    private static String vpaBase(String holderName) {
         String base = holderName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", ".").replaceAll("^\\.|\\.$", "");
         if (base.isEmpty()) {
             base = "customer";
         }
-        if (base.length() > 30) {
-            base = base.substring(0, 30);
-        }
-        for (int n = 0; ; n++) {
-            String vpa = base + (n == 0 ? "" : String.valueOf(n)) + "@sproutbank";
-            boolean taken = db.sql("SELECT 1 FROM accounts WHERE vpa = ?").param(vpa).query(Integer.class).optional().isPresent();
-            if (!taken) {
-                return vpa;
-            }
-        }
+        return base.length() > 30 ? base.substring(0, 30) : base;
     }
 
     public Optional<Account> account(UUID userId) {
