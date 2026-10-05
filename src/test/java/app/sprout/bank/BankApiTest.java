@@ -304,6 +304,10 @@ class BankApiTest {
         assertThat(body(mvc.perform(get("/partner/v1/transactions").param("reference", "nothing-like-this").header("X-Partner-Key", KEY)))
                 .path("transactions").size()).isZero();
         mvc.perform(get("/partner/v1/transactions").header("X-Partner-Key", "wrong")).andExpect(status().isUnauthorized());
+        JsonNode mine = body(mvc.perform(get("/partner/v1/account").header("X-Partner-Key", clearingKey)).andExpect(status().isOk())
+                .andExpect(MATCHES_CONTRACT));
+        assertThat(mine.path("vpa").asText()).isEqualTo("clearing@sproutbank");
+        assertThat(out.get(0).path("balanceAfter").asText()).as("the balance is the statement's latest").isNotEmpty();
     }
 
     @Test

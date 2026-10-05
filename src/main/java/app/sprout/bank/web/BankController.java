@@ -152,6 +152,12 @@ public class BankController {
         return ResponseEntity.status(p.created() ? HttpStatus.CREATED : HttpStatus.OK).body(payout(p.value()));
     }
 
+    /** The partner's own account and balance, for reconciling its books with the bank. */
+    @GetMapping("/partner/v1/account")
+    public Map<String, Object> partnerAccount(@RequestHeader(value = "X-Partner-Key", required = false) String key) {
+        return account(bank.partnerAccount(bank.partner(key)));
+    }
+
     /** The partner's own statement; with ?reference=, only the money that carried that reference. */
     @GetMapping("/partner/v1/transactions")
     public Map<String, Object> partnerTransactions(@RequestHeader(value = "X-Partner-Key", required = false) String key,
