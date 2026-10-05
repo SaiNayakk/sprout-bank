@@ -22,7 +22,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The bank's rules: accounts, UPI PINs, collect requests and payouts. Every change of money moves it
+ * The bank's rules: accounts, UPI PINs, collect requests and payouts (paying merchants and mandates
+ * are in {@link UpiPayments} and {@link Mandates}). Every change of money moves it
  * between two accounts in one transaction, and every outcome a partner must hear about is written to
  * the outbox in that same transaction.
  */
@@ -208,31 +209,12 @@ public class Bank {
                         r.amount(), r.note(), "EXPIRED", r.createdAt(), r.expiresAt(), now));
                 return null;
             }
-            var pinRow = db.sql("SELECT pin_hash, pin_failures, pin_locked_until, balance_paise FROM accounts WHERE vpa = ? FOR UPDATE")
-                    .param(me.vpa())
-                    .query((rs, n) -> new Object[] {rs.getString(1), rs.getInt(2), rs.getTimestamp(3), rs.getLong(4)}).single();
-            Timestamp lockedUntil = (Timestamp) pinRow[2];
-            if (lockedUntil != null && lockedUntil.toInstant().isAfter(now)) {
-                long secs = Math.max(1, lockedUntil.toInstant().getEpochSecond() - now.getEpochSecond());
-                refusal[0] = new ApiException(ErrorCode.PIN_LOCKED, "Too many wrong PINs. Try again later.", (int) secs, Map.of());
+            refusal[0] = verifyPin(me.vpa(), pin, now);
+            if (refusal[0] != null) {
                 return null;
             }
-            if (!bcrypt.matches(pin == null ? "" : pin, (String) pinRow[0])) {
-                int failures = (int) pinRow[1] + 1;
-                if (failures >= props.pinAttempts()) {
-                    db.sql("UPDATE accounts SET pin_failures = 0, pin_locked_until = ? WHERE vpa = ?")
-                            .params(ts(now.plus(props.pinLockout())), me.vpa()).update();
-                    refusal[0] = new ApiException(ErrorCode.PIN_LOCKED, "Too many wrong PINs. Approvals are locked for "
-                            + props.pinLockout().toMinutes() + " minutes.", (int) props.pinLockout().toSeconds(), Map.of());
-                } else {
-                    db.sql("UPDATE accounts SET pin_failures = ? WHERE vpa = ?").params(failures, me.vpa()).update();
-                    refusal[0] = new ApiException(ErrorCode.INVALID_PIN, "That UPI PIN is wrong.", null,
-                            Map.of("attemptsLeft", props.pinAttempts() - failures));
-                }
-                return null;
-            }
-            db.sql("UPDATE accounts SET pin_failures = 0, pin_locked_until = NULL WHERE vpa = ?").param(me.vpa()).update();
-            if ((long) pinRow[3] < r.amount()) {
+            long balance = db.sql("SELECT balance_paise FROM accounts WHERE vpa = ?").param(me.vpa()).query(Long.class).single();
+            if (balance < r.amount()) {
                 refusal[0] = new ApiException(ErrorCode.INSUFFICIENT_BALANCE, "Not enough money in your account for this payment.");
                 return null;
             }
@@ -245,6 +227,34 @@ public class Bank {
             throw refusal[0];
         }
         return result;
+    }
+
+    /**
+     * Checks a UPI PIN inside the caller's transaction, locking the account row. Wrong PINs are counted
+     * (and lock approvals after too many) even though the caller then fails, so the caller must commit
+     * and raise the returned refusal afterwards. Null means the PIN is right.
+     */
+    ApiException verifyPin(String vpa, String pin, Instant now) {
+        var row = db.sql("SELECT pin_hash, pin_failures, pin_locked_until FROM accounts WHERE vpa = ? FOR UPDATE").param(vpa)
+                .query((rs, n) -> new Object[] {rs.getString(1), rs.getInt(2), rs.getTimestamp(3)}).single();
+        Timestamp lockedUntil = (Timestamp) row[2];
+        if (lockedUntil != null && lockedUntil.toInstant().isAfter(now)) {
+            long secs = Math.max(1, lockedUntil.toInstant().getEpochSecond() - now.getEpochSecond());
+            return new ApiException(ErrorCode.PIN_LOCKED, "Too many wrong PINs. Try again later.", (int) secs, Map.of());
+        }
+        if (!bcrypt.matches(pin == null ? "" : pin, (String) row[0])) {
+            int failures = (int) row[1] + 1;
+            if (failures >= props.pinAttempts()) {
+                db.sql("UPDATE accounts SET pin_failures = 0, pin_locked_until = ? WHERE vpa = ?")
+                        .params(ts(now.plus(props.pinLockout())), vpa).update();
+                return new ApiException(ErrorCode.PIN_LOCKED, "Too many wrong PINs. Approvals are locked for "
+                        + props.pinLockout().toMinutes() + " minutes.", (int) props.pinLockout().toSeconds(), Map.of());
+            }
+            db.sql("UPDATE accounts SET pin_failures = ? WHERE vpa = ?").params(failures, vpa).update();
+            return new ApiException(ErrorCode.INVALID_PIN, "That UPI PIN is wrong.", null, Map.of("attemptsLeft", props.pinAttempts() - failures));
+        }
+        db.sql("UPDATE accounts SET pin_failures = 0, pin_locked_until = NULL WHERE vpa = ?").param(vpa).update();
+        return null;
     }
 
     public Request decline(UUID userId, UUID requestId) {
@@ -363,12 +373,15 @@ public class Bank {
 
     // ── internals ────────────────────────────────────────────────────────────
 
-    /** Moves money between two accounts (locked in name order, so transfers can't deadlock). */
-    private void transfer(String from, String to, long amount, String fromText, String toText, Instant now) {
-        transfer(from, to, amount, fromText, toText, null, now);
+    /**
+     * Moves money between two accounts (locked in name order, so transfers can't deadlock). Returns the
+     * id of the payer's movement.
+     */
+    UUID transfer(String from, String to, long amount, String fromText, String toText, Instant now) {
+        return transfer(from, to, amount, fromText, toText, null, now);
     }
 
-    private void transfer(String from, String to, long amount, String fromText, String toText, String reference, Instant now) {
+    UUID transfer(String from, String to, long amount, String fromText, String toText, String reference, Instant now) {
         for (String vpa : from.compareTo(to) < 0 ? List.of(from, to) : List.of(to, from)) {
             db.sql("SELECT 1 FROM accounts WHERE vpa = ? FOR UPDATE").param(vpa).query(Integer.class).single();
         }
@@ -376,15 +389,37 @@ public class Bank {
                 .params(amount, from).query(Long.class).single();
         long toAfter = db.sql("UPDATE accounts SET balance_paise = balance_paise + ? WHERE vpa = ? RETURNING balance_paise")
                 .params(amount, to).query(Long.class).single();
-        record(from, "OUT", amount, fromText, to, reference, fromAfter, now);
+        UUID out = record(from, "OUT", amount, fromText, to, reference, fromAfter, now);
         record(to, "IN", amount, toText, from, reference, toAfter, now);
+        return out;
     }
 
-    private void record(String vpa, String direction, long amount, String text, String counterparty, String reference, long after,
+    private UUID record(String vpa, String direction, long amount, String text, String counterparty, String reference, long after,
                         Instant now) {
+        UUID id = UUID.randomUUID();
         db.sql("INSERT INTO transactions (id, vpa, direction, amount_paise, description, counterparty, reference, balance_after_paise, at) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                .params(UUID.randomUUID(), vpa, direction, amount, text, counterparty, reference, after, ts(now)).update();
+                .params(id, vpa, direction, amount, text, counterparty, reference, after, ts(now)).update();
+        return id;
+    }
+
+    /** Writes a callback for a partner into the outbox, in the caller's transaction. */
+    void outbox(String partner, String callbackUrl, Map<String, Object> event, Instant now) {
+        try {
+            db.sql("INSERT INTO outbox (id, partner, callback_url, body, created_at, next_attempt_at) VALUES (?, ?, ?, ?, ?, ?)")
+                    .params(UUID.randomUUID(), partner, callbackUrl, json.writeValueAsString(event), ts(now), ts(now)).update();
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    Txn txn(UUID id) {
+        return db.sql("SELECT id, direction, amount_paise, description, counterparty, reference, balance_after_paise, at FROM transactions "
+                        + "WHERE id = ?").param(id)
+                .query((rs, n) -> new Txn(rs.getObject("id", UUID.class), rs.getLong("amount_paise"), rs.getString("direction"),
+                        rs.getString("description"), rs.getString("counterparty"), rs.getString("reference"),
+                        rs.getLong("balance_after_paise"), rs.getTimestamp("at").toInstant()))
+                .single();
     }
 
     /** Writes the partner's callback into the outbox, in the caller's transaction. */
@@ -397,12 +432,7 @@ public class Bank {
         event.put("reference", r.reference());
         event.put("amount", Money.rupees(r.amount()));
         event.put("occurredAt", now.toString());
-        try {
-            db.sql("INSERT INTO outbox (id, partner, callback_url, body, created_at, next_attempt_at) VALUES (?, ?, ?, ?, ?, ?)")
-                    .params(UUID.randomUUID(), r.partner(), callback, json.writeValueAsString(event), ts(now), ts(now)).update();
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException(e);
-        }
+        outbox(r.partner(), callback, event, now);
     }
 
     public Request request(UUID id) {
@@ -427,7 +457,7 @@ public class Bank {
                 rs.getLong("balance_paise"), rs.getTimestamp("opened_at").toInstant());
     }
 
-    private static Timestamp ts(Instant i) {
+    static Timestamp ts(Instant i) {
         return Timestamp.from(i);
     }
 }

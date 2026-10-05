@@ -326,6 +326,117 @@ class BankApiTest {
         assertThat(out.get(0).path("balanceAfter").asText()).as("the balance is the statement's latest").isNotEmpty();
     }
 
+    // ── paying, and AutoPay mandates ─────────────────────────────────────────
+
+    String mandate(String max, boolean shareSpends) throws Exception {
+        return body(partnerPost("/partner/v1/mandates", Map.of("payerVpa", vpa, "maxAmount", max, "purpose", "Round-ups into your Sprout goals",
+                "reference", "mandate-" + UUID.randomUUID(), "shareSpends", shareSpends,
+                "callbackUrl", "http://127.0.0.1:" + PARTNER.getAddress().getPort() + "/events"))
+                .andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT)).path("id").asText();
+    }
+
+    List<String> delivered() throws Exception {
+        callbacks.deliverDue();
+        List<String> types = new java.util.ArrayList<>();
+        for (Map<String, String> r : RECEIVED) {
+            types.add(json.readTree(r.get("body")).path("type").asText());
+        }
+        return types;
+    }
+
+    ResultActions debit(String mandateId, String amount, String reference) throws Exception {
+        return partnerPost("/partner/v1/mandates/" + mandateId + "/debits", Map.of("amount", amount, "reference", reference));
+    }
+
+    @Test
+    void customersPayMerchantsWithTheirPin() throws Exception {
+        JsonNode merchants = body(customerGet("/v1/merchants", user).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("merchants");
+        assertThat(merchants.findValuesAsText("vpa")).contains("monsoonchai@sproutbank", "citymetro@sproutbank");
+        customerPost("/v1/payments", user, Map.of("payeeVpa", "monsoonchai@sproutbank", "amount", "46.00", "upiPin", "2580", "note", "chai"))
+                .andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.direction").value("OUT"))
+                .andExpect(jsonPath("$.amount").value("46.00"))
+                .andExpect(jsonPath("$.description").value("UPI to Monsoon Chai (chai)"));
+        assertThat(balance(user)).isEqualTo("99954.00");
+        customerPost("/v1/payments", user, Map.of("payeeVpa", "monsoonchai@sproutbank", "amount", "46.00", "upiPin", "1397"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("INVALID_PIN"));
+        customerPost("/v1/payments", user, Map.of("payeeVpa", "nobody@sproutbank", "amount", "1.00", "upiPin", "2580"))
+                .andExpect(status().isNotFound());
+        customerPost("/v1/payments", user, Map.of("payeeVpa", "kiranacorner@sproutbank", "amount", "200000.00", "upiPin", "2580"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("INSUFFICIENT_BALANCE"));
+        assertThat(balance(user)).as("refused payments move nothing").isEqualTo("99954.00");
+    }
+
+    @Test
+    void anApprovedMandateLetsThePartnerDebitWithinItsLimitOnce() throws Exception {
+        String id = mandate("500.00", false);
+        customerGet("/v1/mandates?status=PENDING", user).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.mandates[0].id").value(id))
+                .andExpect(jsonPath("$.mandates[0].payeeName").value("Sprout Investments"));
+        debit(id, "100.00", "sweep-early").andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("REQUEST_NOT_PENDING"));
+        customerPost("/v1/mandates/" + id + "/approve", user, Map.of("upiPin", "1397"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("INVALID_PIN"));
+        customerPost("/v1/mandates/" + id + "/approve", user, Map.of("upiPin", "2580"))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT).andExpect(jsonPath("$.status").value("ACTIVE"));
+        assertThat(delivered()).containsExactly("MANDATE_ACTIVE");
+
+        String ref = "sweep-" + UUID.randomUUID();
+        JsonNode first = body(debit(id, "120.00", ref).andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT));
+        debit(id, "120.00", ref).andExpect(status().isOk()).andExpect(jsonPath("$.id").value(first.path("id").asText()));
+        assertThat(balance(user)).as("taken once").isEqualTo("99880.00");
+        debit(id, "500.01", "sweep-" + UUID.randomUUID()).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+        JsonNode in = body(mvc.perform(get("/partner/v1/transactions?reference=" + ref).header("X-Partner-Key", KEY))).path("transactions");
+        assertThat(in.get(0).path("amount").asText()).as("the partner sees it by its reference").isEqualTo("120.00");
+    }
+
+    @Test
+    void aMandateThatSharesSpendsReportsEachPaymentUntilRevoked() throws Exception {
+        String id = mandate("1000.00", true);
+        customerPost("/v1/payments", user, Map.of("payeeVpa", "citymetro@sproutbank", "amount", "30.00", "upiPin", "2580"))
+                .andExpect(status().isCreated());
+        customerPost("/v1/mandates/" + id + "/approve", user, Map.of("upiPin", "2580")).andExpect(status().isOk());
+        String spend = body(customerPost("/v1/payments", user, Map.of("payeeVpa", "tiffinbox@sproutbank", "amount", "143.50", "upiPin", "2580"))
+                .andExpect(status().isCreated())).path("id").asText();
+        assertThat(delivered()).as("only spends while active").containsExactly("MANDATE_ACTIVE", "SPEND");
+        JsonNode event = json.readTree(RECEIVED.get(1).get("body"));
+        assertThat(event.path("spendId").asText()).isEqualTo(spend);
+        assertThat(event.path("amount").asText()).isEqualTo("143.50");
+        assertThat(event.path("payeeName").asText()).isEqualTo("Tiffin Box Kitchen");
+        assertThat(event.path("mandateId").asText()).isEqualTo(id);
+
+        customerPost("/v1/mandates/" + id + "/revoke", user, Map.of()).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.status").value("REVOKED"));
+        customerPost("/v1/payments", user, Map.of("payeeVpa", "bookworm@sproutbank", "amount", "399.00", "upiPin", "2580"))
+                .andExpect(status().isCreated());
+        assertThat(delivered()).containsExactly("MANDATE_ACTIVE", "SPEND", "MANDATE_REVOKED");
+        debit(id, "10.00", "sweep-" + UUID.randomUUID()).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value("REVOKED"));
+    }
+
+    @Test
+    void mandatesNobodyAnswersExpireAndDeclinedOnesAreReported() throws Exception {
+        String declined = mandate("100.00", false);
+        customerPost("/v1/mandates/" + declined + "/decline", user, Map.of()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DECLINED"));
+        String lapsed = mandate("100.00", false);
+        clock.advance(Duration.ofMinutes(15).plusSeconds(1));
+        callbacks.expire();
+        mvc.perform(get("/partner/v1/mandates/" + lapsed).header("X-Partner-Key", KEY)).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)
+                .andExpect(jsonPath("$.status").value("EXPIRED"));
+        delivered();
+        // moving the clock expires what earlier tests left waiting too: look at this test's mandates only
+        List<String> mine = new java.util.ArrayList<>();
+        for (Map<String, String> r : RECEIVED) {
+            JsonNode e = json.readTree(r.get("body"));
+            if (List.of(declined, lapsed).contains(e.path("mandateId").asText())) {
+                mine.add(e.path("type").asText());
+            }
+        }
+        assertThat(mine).containsExactly("MANDATE_DECLINED", "MANDATE_EXPIRED");
+        customerPost("/v1/mandates/" + lapsed + "/approve", user, Map.of("upiPin", "2580")).andExpect(status().isConflict());
+    }
+
     @Test
     void theBankPageIsServed() throws Exception {
         mvc.perform(get("/app")).andExpect(status().isOk()).andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))

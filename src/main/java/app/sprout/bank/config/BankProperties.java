@@ -9,6 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record BankProperties(
         String openingBalance,
         Duration collectTtl,
+        Duration mandateTtl,
         int pinAttempts,
         Duration pinLockout,
         int bcryptStrength,

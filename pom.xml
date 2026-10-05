@@ -14,13 +14,13 @@
   <!-- Released as git tags vX.Y.Z; hosts build a release from its tag (sprout-platform ADR-011). -->
   <groupId>com.github.SaiNayakk</groupId>
   <artifactId>sprout-bank</artifactId>
-  <version>0.3.1</version>
+  <version>0.4.0</version>
   <name>sprout-bank</name>
   <description>Sprout Bank: a simulated bank with UPI collect requests, PINs, payouts and signed callbacks.</description>
 
   <properties>
     <java.version>21</java.version>
-    <sprout-contracts.version>0.7.0</sprout-contracts.version>
+    <sprout-contracts.version>0.9.1</sprout-contracts.version>
   </properties>
 
   <repositories>

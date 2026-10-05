@@ -47,8 +47,10 @@ management:
         step: 15s
     tracing:
       endpoint: ${OTEL_TRACES_URL:http://localhost:4318/v1/traces}
+      export:
+        enabled: ${OTEL_ENABLED:false}   # send traces to a collector only when one runs
   tracing:
-    enabled: ${OTEL_ENABLED:false}
+    enabled: true   # always carry the trace onward (W3C traceparent), even when nothing collects it
     sampling:
       probability: 1.0
   metrics:
@@ -66,6 +68,7 @@ sprout:
   bank:
     opening-balance: "100000.00"     # every new customer starts with this much (it's not real money)
     collect-ttl: ${BANK_COLLECT_TTL:5m}
+    mandate-ttl: ${BANK_MANDATE_TTL:15m}   # an AutoPay request nobody answers lapses after this
     pin-attempts: 3
     pin-lockout: 15m
     bcrypt-strength: ${BANK_BCRYPT_STRENGTH:10}
