@@ -1,0 +1,78 @@
+# Configuration for the bank service. Named bank.yml (not application.yml) so several services can
+# share one JVM host without their settings colliding.
+spring:
+  application:
+    name: sprout-bank
+  datasource:
+    url: ${BANK_DB_URL:jdbc:postgresql://localhost:5432/sprout?currentSchema=bank}
+    username: ${BANK_DB_USER:sprout}
+    password: ${BANK_DB_PASSWORD:sprout}
+    hikari:
+      maximum-pool-size: 5
+      pool-name: bank
+      connection-timeout: 2000   # fail fast when the database is gone (CHAOS-01's lesson)
+      validation-timeout: 1000
+  flyway:
+    locations: classpath:db/bank
+    schemas: bank
+    default-schema: bank
+  jackson:
+    default-property-inclusion: non_null   # absent, never null: the contracts say so
+    deserialization:
+      fail-on-unknown-properties: true
+  jmx:
+    enabled: false
+
+server:
+  port: ${BANK_PORT:8107}
+  address: ${BANK_BIND:127.0.0.1}
+  tomcat:
+    threads:
+      max: 16
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTEL_ENABLED:false}
+        url: ${OTEL_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+    tracing:
+      endpoint: ${OTEL_TRACES_URL:http://localhost:4318/v1/traces}
+  tracing:
+    enabled: ${OTEL_ENABLED:false}
+    sampling:
+      probability: 1.0
+  metrics:
+    tags:
+      service: sprout-bank
+
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:}
+  pattern:
+    correlation: "[%X{requestId:-}] "
+
+sprout:
+  bank:
+    opening-balance: "100000.00"     # every new customer starts with this much (it's not real money)
+    collect-ttl: ${BANK_COLLECT_TTL:5m}
+    pin-attempts: 3
+    pin-lockout: 15m
+    bcrypt-strength: ${BANK_BCRYPT_STRENGTH:10}
+    # Businesses that may ask customers for money and pay them. Each has its own account here.
+    partners:
+      - name: sprout
+        display-name: Sprout Investments
+        vpa: sprout@sproutbank
+        key: ${BANK_SPROUT_PARTNER_KEY:dev-only-partner-key}
+        webhook-secret: ${BANK_SPROUT_WEBHOOK_SECRET:dev-only-webhook-secret}
