@@ -280,6 +280,33 @@ class BankApiTest {
     }
 
     @Test
+    void businessesPayEachOtherAndEachSeesTheMoneyByItsReference() throws Exception {
+        String clearingKey = "dev-only-clearing-partner-key";
+        // the clearing corporation opens with its float and pays Sprout a settlement
+        String ref = "scc:" + UUID.randomUUID();
+        mvc.perform(post("/partner/v1/payouts").header("X-Partner-Key", clearingKey).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("payeeVpa", "sprout@sproutbank", "amount", "2500.75", "reference", ref))))
+                .andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT);
+        JsonNode in = body(mvc.perform(get("/partner/v1/transactions").param("reference", ref).header("X-Partner-Key", KEY))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("transactions");
+        assertThat(in.size()).isEqualTo(1);
+        assertThat(in.get(0).path("direction").asText()).isEqualTo("IN");
+        assertThat(in.get(0).path("amount").asText()).isEqualTo("2500.75");
+        assertThat(in.get(0).path("counterparty").asText()).isEqualTo("clearing@sproutbank");
+        JsonNode out = body(mvc.perform(get("/partner/v1/transactions").param("reference", ref).header("X-Partner-Key", clearingKey)))
+                .path("transactions");
+        assertThat(out.get(0).path("direction").asText()).isEqualTo("OUT");
+        // and Sprout pays the clearing corporation back the same way; nobody pays themselves
+        partnerPost("/partner/v1/payouts", Map.of("payeeVpa", "clearing@sproutbank", "amount", "500.00", "reference", "pay-" + UUID.randomUUID()))
+                .andExpect(status().isCreated());
+        partnerPost("/partner/v1/payouts", Map.of("payeeVpa", "sprout@sproutbank", "amount", "1.00", "reference", "self-" + UUID.randomUUID()))
+                .andExpect(status().isNotFound());
+        assertThat(body(mvc.perform(get("/partner/v1/transactions").param("reference", "nothing-like-this").header("X-Partner-Key", KEY)))
+                .path("transactions").size()).isZero();
+        mvc.perform(get("/partner/v1/transactions").header("X-Partner-Key", "wrong")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void theBankPageIsServed() throws Exception {
         mvc.perform(get("/app")).andExpect(status().isOk()).andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_HTML))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("Sprout Bank")));
