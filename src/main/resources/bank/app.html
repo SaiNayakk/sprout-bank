@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprout Bank</title>
+<style>
+  :root { --ink:#13203b; --muted:#5b6782; --line:#dfe4ee; --bg:#f4f6fb; --card:#fff; --brand:#1f3c88; --brand2:#2a52b8;
+          --good:#12795a; --bad:#b4430b; --warn:#9a6700; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink:#e8ecf6; --muted:#9aa6c2; --line:#2a3452; --bg:#0d1324; --card:#151d33; --brand:#7e9cff; --brand2:#a3b8ff;
+            --good:#4fcf9f; --bad:#ff8a5c; --warn:#f2c14e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--ink); background:var(--bg); }
+  header { background:var(--brand); color:#fff; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; }
+  header b { font-size:18px; letter-spacing:.2px; }
+  header small { opacity:.8; }
+  main { max-width:520px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input { width:100%; font:inherit; padding:11px 12px; border:1px solid var(--line); border-radius:10px; background:transparent; color:inherit; }
+  input:focus { outline:2px solid var(--brand2); border-color:transparent; }
+  button { font:inherit; border:0; border-radius:10px; padding:11px 14px; cursor:pointer; background:var(--brand); color:#fff; font-weight:600; }
+  button.ghost { background:transparent; color:var(--brand); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; align-items:center; justify-content:space-between; }
+  .big { font-size:28px; font-weight:700; }
+  .muted { color:var(--muted); font-size:13px; }
+  .error { color:var(--bad); font-size:14px; min-height:1.2em; margin-top:8px; }
+  .ok { color:var(--good); }
+  .req { border-top:1px solid var(--line); padding:12px 0; }
+  .req:first-child { border-top:0; }
+  .amount { font-weight:700; font-variant-numeric: tabular-nums; }
+  .in { color:var(--good); } .out { color:var(--bad); }
+  .note { background:color-mix(in srgb, var(--warn) 12%, transparent); color:var(--ink); border-radius:10px; padding:10px 12px; font-size:13px; }
+  .pin { letter-spacing:8px; text-align:center; font-size:22px; }
+  .hidden { display:none; }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding:20px 16px 32px; }
+</style>
+</head>
+<body>
+<header><div><b>Sprout Bank</b><br><small>A pretend bank for trying Sprout</small></div>
+  <button id="signout" class="ghost hidden" style="color:#fff;border-color:rgba(255,255,255,.4)">Sign out</button></header>
+<main>
+  <p class="note">Nothing here is real money. Sprout Bank exists so you can add money to Sprout and approve it with a UPI PIN, end to end.</p>
+
+  <section id="signin" class="card hidden">
+    <h2>Sign in with your Sprout account</h2>
+    <form id="signinForm">
+      <label for="email">Email</label><input id="email" type="email" autocomplete="username" required>
+      <label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required>
+      <div id="totpBox" class="hidden"><label for="totp">Code from your authenticator app</label>
+        <input id="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></div>
+      <div class="error" id="signinError"></div>
+      <button type="submit">Sign in</button>
+    </form>
+  </section>
+
+  <section id="open" class="card hidden">
+    <h2>Open your Sprout Bank account</h2>
+    <p class="muted">You'll start with ₹1,00,000 of pretend money. Choose the UPI PIN you'll use to approve payments.</p>
+    <form id="openForm">
+      <label for="holder">Your name</label><input id="holder" autocomplete="name" required>
+      <label for="pin1">UPI PIN (4 or 6 digits)</label><input id="pin1" class="pin" type="password" inputmode="numeric" maxlength="6" required>
+      <label for="pin2">Same PIN again</label><input id="pin2" class="pin" type="password" inputmode="numeric" maxlength="6" required>
+      <div class="error" id="openError"></div>
+      <button type="submit">Open account</button>
+    </form>
+  </section>
+
+  <section id="home" class="hidden">
+    <div class="card">
+      <div class="muted">Balance</div>
+      <div class="big amount" id="balance">₹0.00</div>
+      <div class="muted">UPI address: <b id="vpa"></b></div>
+    </div>
+    <div class="card">
+      <h2>Waiting for you</h2>
+      <div id="pending"><p class="muted">No payment requests right now.</p></div>
+    </div>
+    <div class="card">
+      <h2>Statement</h2>
+      <div id="txns"></div>
+    </div>
+  </section>
+
+  <section id="approve" class="card hidden">
+    <h2>Approve payment</h2>
+    <p><span class="amount" id="apAmount"></span> to <b id="apPayee"></b></p>
+    <label for="apPin">Enter your UPI PIN</label>
+    <input id="apPin" class="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="off">
+    <div class="error" id="apError"></div>
+    <div class="row"><button class="ghost" id="apCancel">Cancel</button><button id="apGo">Pay</button></div>
+  </section>
+</main>
+<footer>Sprout Bank is a simulation for the Sprout project. Not a bank.</footer>
+
+<script>
+(() => {
+  const store = {
+    get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch {} },
+  };
+  const $ = id => document.getElementById(id);
+  const show = (...ids) => ['signin', 'open', 'home', 'approve'].forEach(s => $(s).classList.toggle('hidden', !ids.includes(s)));
+  const rupees = a => '₹' + Number(a).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  let challenge = null, approving = null, poll = null;
+
+  async function call(path, opts = {}, retry = true) {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = store.get('access');
+    if (token) headers.Authorization = 'Bearer ' + token;
+    const res = await fetch(path, { ...opts, headers });
+    if (res.status === 401 && retry && store.get('refresh')) {
+      const r = await fetch('/api/identity/v1/tokens/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: store.get('refresh') }) });
+      if (r.ok) { const t = await r.json(); store.set('access', t.accessToken); store.set('refresh', t.refreshToken); return call(path, opts, false); }
+      signOut();
+    }
+    const body = res.headers.get('content-type')?.includes('json') ? await res.json() : null;
+    return { status: res.status, body };
+  }
+
+  function signOut() {
+    store.set('access', null); store.set('refresh', null); clearInterval(poll);
+    $('signout').classList.add('hidden'); show('signin');
+  }
+
+  $('signinForm').addEventListener('submit', async e => {
+    e.preventDefault(); $('signinError').textContent = '';
+    let r;
+    if (challenge) {
+      r = await call('/api/identity/v1/sessions/totp', { method: 'POST', body: JSON.stringify({ challengeId: challenge, code: $('totp').value.trim() }) });
+    } else {
+      r = await call('/api/identity/v1/sessions', { method: 'POST', body: JSON.stringify({ email: $('email').value.trim(), password: $('password').value }) });
+    }
+    if (r.status === 200 && r.body.status === 'TOTP_REQUIRED') { challenge = r.body.challengeId; $('totpBox').classList.remove('hidden'); $('totp').focus(); return; }
+    if (r.status === 200 && r.body.tokens) {
+      store.set('access', r.body.tokens.accessToken); store.set('refresh', r.body.tokens.refreshToken); challenge = null;
+      return start();
+    }
+    $('signinError').textContent = r.body?.detail || 'Sign-in failed.';
+  });
+
+  $('openForm').addEventListener('submit', async e => {
+    e.preventDefault(); $('openError').textContent = '';
+    if ($('pin1').value !== $('pin2').value) { $('openError').textContent = "The two PINs don't match."; return; }
+    const r = await call('/api/bank/v1/accounts', { method: 'POST', body: JSON.stringify({ holderName: $('holder').value, upiPin: $('pin1').value }) });
+    if (r.status === 201) return start();
+    $('openError').textContent = r.body?.detail || "Couldn't open the account.";
+  });
+
+  async function refresh() {
+    const [acct, reqs, txns] = await Promise.all([call('/api/bank/v1/accounts/me'), call('/api/bank/v1/requests?status=PENDING'),
+      call('/api/bank/v1/transactions')]);
+    if (acct.status !== 200) return;
+    $('balance').textContent = rupees(acct.body.balance); $('vpa').textContent = acct.body.vpa;
+    const pending = reqs.body?.requests || [];
+    $('pending').innerHTML = pending.length ? pending.map(r => `
+      <div class="req"><div class="row"><div><span class="amount">${rupees(r.amount)}</span> to <b>${esc(r.payeeName)}</b>
+        <div class="muted">${esc(r.note || '')} · expires ${new Date(r.expiresAt).toLocaleTimeString()}</div></div>
+        <div style="display:flex;gap:6px"><button class="ghost" data-decline="${r.id}">Decline</button>
+        <button data-approve="${r.id}" data-amount="${r.amount}" data-payee="${esc(r.payeeName)}">Approve</button></div></div></div>`).join('')
+      : '<p class="muted">No payment requests right now.</p>';
+    $('txns').innerHTML = (txns.body?.transactions || []).map(t => `
+      <div class="req row"><div>${esc(t.description)}<div class="muted">${new Date(t.at).toLocaleString()}</div></div>
+      <div class="amount ${t.direction === 'IN' ? 'in' : 'out'}">${t.direction === 'IN' ? '+' : '−'}${rupees(t.amount)}</div></div>`).join('');
+  }
+
+  document.addEventListener('click', async e => {
+    const a = e.target.closest('[data-approve]'), d = e.target.closest('[data-decline]');
+    if (a) { approving = a.dataset.approve; $('apAmount').textContent = rupees(a.dataset.amount); $('apPayee').textContent = a.dataset.payee;
+      $('apPin').value = ''; $('apError').textContent = ''; show('home', 'approve'); $('approve').scrollIntoView(); $('apPin').focus(); }
+    if (d) { await call(`/api/bank/v1/requests/${d.dataset.decline}/decline`, { method: 'POST' }); refresh(); }
+  });
+  $('apCancel').addEventListener('click', () => { approving = null; show('home'); });
+  $('apGo').addEventListener('click', async () => {
+    $('apGo').disabled = true;
+    const r = await call(`/api/bank/v1/requests/${approving}/approve`, { method: 'POST', body: JSON.stringify({ upiPin: $('apPin').value }) });
+    $('apGo').disabled = false;
+    if (r.status === 200) { approving = null; show('home'); return refresh(); }
+    $('apError').textContent = (r.body?.detail || 'Payment failed.') + (r.body?.attemptsLeft != null ? ` ${r.body.attemptsLeft} tries left.` : '');
+  });
+  $('signout').addEventListener('click', signOut);
+
+  async function start() {
+    if (!store.get('access')) return show('signin');
+    const me = await call('/api/bank/v1/accounts/me');
+    $('signout').classList.remove('hidden');
+    if (me.status === 404) return show('open');
+    if (me.status !== 200) return signOut();
+    show('home'); refresh(); clearInterval(poll); poll = setInterval(refresh, 3000);
+  }
+  start();
+})();
+</script>
+</body>
+</html>
