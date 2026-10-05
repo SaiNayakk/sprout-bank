@@ -165,6 +165,10 @@ public class Bank {
         return statement(mine(userId).vpa(), null);
     }
 
+    public Account partnerAccount(Partner partner) {
+        return byVpa(partner.vpa()).orElseThrow();
+    }
+
     /** A partner's own statement, newest first; with a reference, only the movements that carried it. */
     public List<Txn> partnerTransactions(Partner partner, String reference) {
         return statement(partner.vpa(), reference);
