@@ -7,6 +7,7 @@ import app.sprout.bank.domain.Bank.Account;
 import app.sprout.bank.domain.Bank.Created;
 import app.sprout.bank.domain.Bank.Payout;
 import app.sprout.bank.domain.Bank.Request;
+import app.sprout.bank.domain.Bank.Txn;
 import app.sprout.bank.domain.ErrorCode;
 import app.sprout.bank.domain.Money;
 import jakarta.validation.Valid;
@@ -92,19 +93,24 @@ public class BankController {
 
     @GetMapping("/v1/transactions")
     public Map<String, Object> transactions(@RequestHeader(value = "X-User-Id", required = false) String user) {
-        return Map.of("transactions", bank.transactions(userId(user)).stream().map(t -> {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", t.id().toString());
-            m.put("amount", Money.rupees(t.amount()));
-            m.put("direction", t.direction());
-            m.put("description", t.description());
-            if (t.counterparty() != null) {
-                m.put("counterparty", t.counterparty());
-            }
-            m.put("balanceAfter", Money.rupees(t.balanceAfter()));
-            m.put("at", t.at().toString());
-            return m;
-        }).toList());
+        return Map.of("transactions", bank.transactions(userId(user)).stream().map(BankController::txn).toList());
+    }
+
+    static Map<String, Object> txn(Txn t) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", t.id().toString());
+        m.put("amount", Money.rupees(t.amount()));
+        m.put("direction", t.direction());
+        m.put("description", t.description());
+        if (t.counterparty() != null) {
+            m.put("counterparty", t.counterparty());
+        }
+        if (t.reference() != null) {
+            m.put("reference", t.reference());
+        }
+        m.put("balanceAfter", Money.rupees(t.balanceAfter()));
+        m.put("at", t.at().toString());
+        return m;
     }
 
     @GetMapping(value = "/app", produces = MediaType.TEXT_HTML_VALUE)
@@ -144,6 +150,13 @@ public class BankController {
                                                       @Valid @RequestBody PayoutBody body) {
         Created<Payout> p = bank.payout(bank.partner(key), body.payeeVpa(), Money.paise(body.amount()), body.reference());
         return ResponseEntity.status(p.created() ? HttpStatus.CREATED : HttpStatus.OK).body(payout(p.value()));
+    }
+
+    /** The partner's own statement; with ?reference=, only the money that carried that reference. */
+    @GetMapping("/partner/v1/transactions")
+    public Map<String, Object> partnerTransactions(@RequestHeader(value = "X-Partner-Key", required = false) String key,
+                                                   @RequestParam(required = false) String reference) {
+        return Map.of("transactions", bank.partnerTransactions(bank.partner(key), reference).stream().map(BankController::txn).toList());
     }
 
     @GetMapping("/partner/v1/payouts/{reference}")

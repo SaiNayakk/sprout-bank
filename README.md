@@ -13,6 +13,10 @@ exchange, clearing, the depository) as they arrive.
 
 Partners authenticate with `X-Partner-Key`; customers come through the gateway, which supplies their identity.
 
+**Businesses pay each other too.** Partners (Sprout, the clearing corporation) can pay any account
+here, and read their own statement filtered by the reference a payment carried, which is how the
+clearing corporation and Sprout see settlement money arrive.
+
 ## Part of Sprout
 
 [Sprout](https://sainayakk.github.io/sprout-platform/) is a simulated brokerage built from scratch as

@@ -14,6 +14,9 @@ public record BankProperties(
         int bcryptStrength,
         List<Partner> partners) {
 
-    /** A business that may collect from and pay customers: its account, API key and callback secret. */
-    public record Partner(String name, String displayName, String vpa, String key, String webhookSecret) {}
+    /**
+     * A business with an account here that may collect from customers and pay anyone: its account, API
+     * key, callback secret, and the money its account opens with (e.g. a clearing corporation's float).
+     */
+    public record Partner(String name, String displayName, String vpa, String key, String webhookSecret, String openingBalance) {}
 }

@@ -35,7 +35,7 @@ public class Bank {
 
     public record Payout(UUID id, String payeeVpa, long amount, String reference, String status, Instant createdAt) {}
 
-    public record Txn(UUID id, long amount, String direction, String description, String counterparty, long balanceAfter,
+    public record Txn(UUID id, long amount, String direction, String description, String counterparty, String reference, long balanceAfter,
                       Instant at) {}
 
     /** Partner calls return whether they created something new (201) or found it from before (200). */
@@ -59,12 +59,13 @@ public class Bank {
 
     // ── partners ─────────────────────────────────────────────────────────────
 
-    /** Each partner business has an account here (created once, empty). */
+    /** Each partner business has an account here, created once with its opening balance (usually none). */
     public void ensurePartnerAccounts() {
         for (Partner p : props.partners()) {
-            db.sql("INSERT INTO accounts (vpa, partner, holder_name, balance_paise, opened_at) VALUES (?, ?, ?, 0, ?) "
+            long opening = p.openingBalance() == null ? 0 : Money.paise(p.openingBalance());
+            db.sql("INSERT INTO accounts (vpa, partner, holder_name, balance_paise, opened_at) VALUES (?, ?, ?, ?, ?) "
                             + "ON CONFLICT (vpa) DO NOTHING")
-                    .params(p.vpa(), p.name(), p.displayName(), ts(clock.instant())).update();
+                    .params(p.vpa(), p.name(), p.displayName(), opening, ts(clock.instant())).update();
         }
     }
 
@@ -98,7 +99,7 @@ public class Bank {
             tx.executeWithoutResult(s -> {
                 db.sql("INSERT INTO accounts (vpa, user_id, holder_name, balance_paise, pin_hash, opened_at) VALUES (?, ?, ?, ?, ?, ?)")
                         .params(vpa, userId, name, opening, hash, ts(now)).update();
-                record(vpa, "IN", opening, "Opening balance (not real money)", null, opening, now);
+                record(vpa, "IN", opening, "Opening balance (not real money)", null, null, opening, now);
             });
         } catch (org.springframework.dao.DuplicateKeyException e) {
             throw new ApiException(ErrorCode.ACCOUNT_EXISTS, "You already have a Sprout Bank account.");
@@ -161,13 +162,21 @@ public class Bank {
     }
 
     public List<Txn> transactions(UUID userId) {
-        Account me = mine(userId);
-        return db.sql("SELECT id, direction, amount_paise, description, counterparty, balance_after_paise, at FROM transactions "
-                        + "WHERE vpa = ? ORDER BY at DESC, id DESC LIMIT 100")
-                .param(me.vpa())
+        return statement(mine(userId).vpa(), null);
+    }
+
+    /** A partner's own statement, newest first; with a reference, only the movements that carried it. */
+    public List<Txn> partnerTransactions(Partner partner, String reference) {
+        return statement(partner.vpa(), reference);
+    }
+
+    private List<Txn> statement(String vpa, String reference) {
+        return db.sql("SELECT id, direction, amount_paise, description, counterparty, reference, balance_after_paise, at FROM transactions "
+                        + "WHERE vpa = ? AND (CAST(? AS text) IS NULL OR reference = ?) ORDER BY at DESC, id DESC LIMIT 100")
+                .params(vpa, reference, reference)
                 .query((rs, n) -> new Txn(rs.getObject("id", UUID.class), rs.getLong("amount_paise"), rs.getString("direction"),
-                        rs.getString("description"), rs.getString("counterparty"), rs.getLong("balance_after_paise"),
-                        rs.getTimestamp("at").toInstant()))
+                        rs.getString("description"), rs.getString("counterparty"), rs.getString("reference"),
+                        rs.getLong("balance_after_paise"), rs.getTimestamp("at").toInstant()))
                 .list();
     }
 
@@ -311,8 +320,9 @@ public class Bank {
         if (existing.isPresent()) {
             return new Created<>(existing.get(), false);
         }
-        Account payee = byVpa(payeeVpa).filter(a -> a.userId() != null)
-                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "No customer has the UPI address " + payeeVpa + "."));
+        // customers and other businesses alike: a clearing corporation and its members pay each other this way
+        Account payee = byVpa(payeeVpa).filter(a -> !a.vpa().equals(partner.vpa()))
+                .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "No account has the UPI address " + payeeVpa + "."));
         Instant now = clock.instant();
         UUID id = UUID.randomUUID();
         try {
@@ -325,7 +335,7 @@ public class Bank {
                 db.sql("INSERT INTO payouts (id, partner, reference, payee_vpa, amount_paise, status, created_at) "
                                 + "VALUES (?, ?, ?, ?, ?, 'COMPLETED', ?)")
                         .params(id, partner.name(), reference, payee.vpa(), amount, ts(now)).update();
-                transfer(partner.vpa(), payee.vpa(), amount, "Payout to " + payee.holderName(), "From " + partner.displayName(), now);
+                transfer(partner.vpa(), payee.vpa(), amount, "Payout to " + payee.holderName(), "From " + partner.displayName(), reference, now);
             });
         } catch (org.springframework.dao.DuplicateKeyException e) {
             return new Created<>(payoutByReference(partner, reference).orElseThrow(), false);
@@ -345,6 +355,10 @@ public class Bank {
 
     /** Moves money between two accounts (locked in name order, so transfers can't deadlock). */
     private void transfer(String from, String to, long amount, String fromText, String toText, Instant now) {
+        transfer(from, to, amount, fromText, toText, null, now);
+    }
+
+    private void transfer(String from, String to, long amount, String fromText, String toText, String reference, Instant now) {
         for (String vpa : from.compareTo(to) < 0 ? List.of(from, to) : List.of(to, from)) {
             db.sql("SELECT 1 FROM accounts WHERE vpa = ? FOR UPDATE").param(vpa).query(Integer.class).single();
         }
@@ -352,14 +366,15 @@ public class Bank {
                 .params(amount, from).query(Long.class).single();
         long toAfter = db.sql("UPDATE accounts SET balance_paise = balance_paise + ? WHERE vpa = ? RETURNING balance_paise")
                 .params(amount, to).query(Long.class).single();
-        record(from, "OUT", amount, fromText, to, fromAfter, now);
-        record(to, "IN", amount, toText, from, toAfter, now);
+        record(from, "OUT", amount, fromText, to, reference, fromAfter, now);
+        record(to, "IN", amount, toText, from, reference, toAfter, now);
     }
 
-    private void record(String vpa, String direction, long amount, String text, String counterparty, long after, Instant now) {
-        db.sql("INSERT INTO transactions (id, vpa, direction, amount_paise, description, counterparty, balance_after_paise, at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .params(UUID.randomUUID(), vpa, direction, amount, text, counterparty, after, ts(now)).update();
+    private void record(String vpa, String direction, long amount, String text, String counterparty, String reference, long after,
+                        Instant now) {
+        db.sql("INSERT INTO transactions (id, vpa, direction, amount_paise, description, counterparty, reference, balance_after_paise, at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .params(UUID.randomUUID(), vpa, direction, amount, text, counterparty, reference, after, ts(now)).update();
     }
 
     /** Writes the partner's callback into the outbox, in the caller's transaction. */

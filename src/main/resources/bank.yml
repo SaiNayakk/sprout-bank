@@ -69,10 +69,18 @@ sprout:
     pin-attempts: 3
     pin-lockout: 15m
     bcrypt-strength: ${BANK_BCRYPT_STRENGTH:10}
-    # Businesses that may ask customers for money and pay them. Each has its own account here.
+    # Businesses with an account here: they may ask customers for money and pay anyone.
     partners:
       - name: sprout
         display-name: Sprout Investments
         vpa: sprout@sproutbank
         key: ${BANK_SPROUT_PARTNER_KEY:dev-only-partner-key}
         webhook-secret: ${BANK_SPROUT_WEBHOOK_SECRET:dev-only-webhook-secret}
+      # The clearing corporation. Its float stands for what the other (simulated) brokers pay in, so it can
+      # pay Sprout out on days Sprout's customers sold more than they bought.
+      - name: clearing
+        display-name: Sprout Clearing Corporation
+        vpa: clearing@sproutbank
+        key: ${BANK_CLEARING_PARTNER_KEY:dev-only-clearing-partner-key}
+        webhook-secret: ${BANK_CLEARING_WEBHOOK_SECRET:dev-only-clearing-webhook-secret}
+        opening-balance: ${BANK_CLEARING_FLOAT:10000000.00}
