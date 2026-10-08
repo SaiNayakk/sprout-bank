@@ -358,6 +358,44 @@ class BankApiTest {
         return partnerPost("/partner/v1/mandates/" + mandateId + "/debits", Map.of("amount", amount, "reference", reference));
     }
 
+    ResultActions payWithKey(String key, String amount) throws Exception {
+        var req = post("/v1/payments").header("X-User-Id", user.toString()).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("payeeVpa", "tiffinbox@sproutbank", "amount", amount, "upiPin", "2580")));
+        return mvc.perform(key == null ? req : req.header("Idempotency-Key", key));
+    }
+
+    @Test
+    void aPaymentSentAgainWithTheSameKeyHappensOnce(@Autowired app.sprout.bank.domain.Bank bank) throws Exception {
+        long payeeBefore = bank.byVpa("tiffinbox@sproutbank").orElseThrow().balance();
+        String key = "replay-" + UUID.randomUUID();
+        String first = body(payWithKey(key, "25.00").andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT)).path("id").asText();
+        String again = body(payWithKey(key, "25.00").andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("id").asText();
+        assertThat(again).isEqualTo(first);
+        assertThat(balance(user)).isEqualTo("99975.00");
+        assertThat(bank.byVpa("tiffinbox@sproutbank").orElseThrow().balance()).isEqualTo(payeeBefore + 2500);
+    }
+
+    @Test
+    void aDifferentKeyIsAnotherPayment() throws Exception {
+        String first = body(payWithKey("first-" + UUID.randomUUID(), "10.00").andExpect(status().isCreated())).path("id").asText();
+        String second = body(payWithKey("second-" + UUID.randomUUID(), "10.00").andExpect(status().isCreated())).path("id").asText();
+        assertThat(second).isNotEqualTo(first);
+        assertThat(balance(user)).isEqualTo("99980.00");
+    }
+
+    @Test
+    void withoutAKeyEveryPaymentIsNew() throws Exception {
+        payWithKey(null, "10.00").andExpect(status().isCreated());
+        payWithKey(null, "10.00").andExpect(status().isCreated());
+        assertThat(balance(user)).isEqualTo("99980.00");
+    }
+
+    @Test
+    void aTooShortKeyIsRefused() throws Exception {
+        payWithKey("short", "10.00").andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+        assertThat(balance(user)).isEqualTo("100000.00");
+    }
+
     @Test
     void customersPayMerchantsWithTheirPin() throws Exception {
         JsonNode merchants = body(customerGet("/v1/merchants", user).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("merchants");

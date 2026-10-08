@@ -115,9 +115,10 @@ public class BankController {
 
     @PostMapping("/v1/payments")
     public ResponseEntity<Map<String, Object>> pay(@RequestHeader(value = "X-User-Id", required = false) String user,
+                                                   @RequestHeader(value = "Idempotency-Key", required = false) String key,
                                                    @Valid @RequestBody PayBody body) {
-        Txn t = upi.pay(userId(user), body.payeeVpa(), Money.paise(body.amount()), body.upiPin(), body.note());
-        return ResponseEntity.status(HttpStatus.CREATED).body(txn(t));
+        Bank.Created<Txn> paid = upi.pay(userId(user), body.payeeVpa(), Money.paise(body.amount()), body.upiPin(), body.note(), key);
+        return ResponseEntity.status(paid.created() ? HttpStatus.CREATED : HttpStatus.OK).body(txn(paid.value()));
     }
 
     @GetMapping("/v1/mandates")
